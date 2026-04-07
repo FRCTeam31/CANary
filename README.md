@@ -1,6 +1,10 @@
-# CAN Bus QA Tool
+# CANary
 
-A zero-configuration FRC robot program for electrical team QA. Deploy it, open RioLog, and read the report. **No code changes needed, ever.**
+<picture>
+  <img alt="canary picture" src="canary.png" width="200">
+</picture>
+
+A zero-configuration FRC robot program for electrical team QA. Deploy it, open RioLog, and read the report.
 
 ---
 

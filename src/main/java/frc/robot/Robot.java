@@ -4,11 +4,10 @@
 
 package frc.robot;
 
-import org.littletonrobotics.junction.LoggedRobot;
-
+import edu.wpi.first.wpilibj.TimedRobot;
 import edu.wpi.first.wpilibj.Timer;
 
-public class Robot extends LoggedRobot {
+public class Robot extends TimedRobot {
 
   private final CANBusInspector inspector = new CANBusInspector();
     private boolean hasRun = false;
