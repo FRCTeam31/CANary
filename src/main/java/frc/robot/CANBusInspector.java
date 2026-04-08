@@ -1,6 +1,8 @@
 package frc.robot;
 
 import edu.wpi.first.hal.CANData;
+import edu.wpi.first.networktables.NetworkTable;
+import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.wpilibj.CAN;
 import edu.wpi.first.wpilibj.RobotController;
 
@@ -39,6 +41,30 @@ import java.util.stream.Collectors;
  *   3. Report prints ~5 seconds after boot
  */
 public class CANBusInspector {
+
+    /** The default NetworkTables key under which all CANary results are published. */
+    public static final String NT_TABLE_KEY = "CANary";
+
+    private final NetworkTable table;
+
+    /**
+     * Creates a new inspector that publishes results to the default {@code "CANary"}
+     * NetworkTables table.
+     */
+    public CANBusInspector() {
+        this(NetworkTableInstance.getDefault().getTable(NT_TABLE_KEY));
+    }
+
+    /**
+     * Creates a new inspector that publishes results to the supplied
+     * {@link NetworkTable}. Use this constructor when you want results under a
+     * custom table path.
+     *
+     * @param networkTable the NetworkTable to publish results to
+     */
+    public CANBusInspector(NetworkTable networkTable) {
+        this.table = networkTable;
+    }
 
     // -----------------------------------------------------------------------
     // FRC CAN Manufacturer codes (8-bit)
@@ -180,6 +206,27 @@ public class CANBusInspector {
      * periodic loop.
      */
     public void runInspection() {
+        runInspection(false);
+    }
+
+    /**
+     * Runs the full CAN bus inspection and prints a formatted report to standard output
+     * (visible in Driver Station RioLog). Optionally publishes the same results to NetworkTables.
+     *
+     * <p>The report includes:
+     * <ul>
+     *   <li>Bus health (utilization %, RX/TX error counts)</li>
+     *   <li>A table of every detected device with its CAN ID and model name</li>
+     *   <li>Duplicate-ID warnings</li>
+     *   <li>An overall PASS / FAIL result</li>
+     * </ul>
+     *
+     * <p><strong>Note:</strong> This method is blocking and iterates over all possible
+     * manufacturer × device-type × ID combinations. Call it once (e.g. in
+     * {@code robotInit} with a delay, or from a triggered command) rather than in a
+     * periodic loop.
+     */
+    public void runInspection(boolean publishToNetworkTables) {
         System.out.println("\n" + "=".repeat(62));
         System.out.println("  CAN BUS QA TOOL  —  Passive Device Scan");
         System.out.println("=".repeat(62));
@@ -191,6 +238,10 @@ public class CANBusInspector {
         printBusHealth();
         printDeviceTable(detected, idCounts);
         printSummary(detected, idCounts);
+
+        if (publishToNetworkTables) {
+            publishToNetworkTables(detected, idCounts);
+        }
 
         System.out.println("=".repeat(62));
         System.out.println("  END OF REPORT");
@@ -315,5 +366,67 @@ public class CANBusInspector {
             System.out.println("    → Verify device list above matches your wiring plan.");
         }
         System.out.println();
+    }
+
+    // -----------------------------------------------------------------------
+
+    /**
+     * Publishes the full inspection report to NetworkTables under the
+     * {@link #NT_TABLE_KEY} table (default {@code "CANary"}).
+     *
+     * <p>Published entries:
+     * <table>
+     *   <caption>NetworkTables layout</caption>
+     *   <tr><th>Key</th><th>Type</th><th>Description</th></tr>
+     *   <tr><td>{@code BusHealth/Utilization}</td><td>double</td><td>Bus utilization (0–100%)</td></tr>
+     *   <tr><td>{@code BusHealth/ReceiveErrors}</td><td>int</td><td>Receive error count</td></tr>
+     *   <tr><td>{@code BusHealth/TransmitErrors}</td><td>int</td><td>Transmit error count</td></tr>
+     *   <tr><td>{@code BusHealth/TxFullCount}</td><td>int</td><td>TX-full count</td></tr>
+     *   <tr><td>{@code BusHealth/Healthy}</td><td>boolean</td><td>True when both error counters are zero</td></tr>
+     *   <tr><td>{@code Devices}</td><td>String[]</td><td>One entry per device: {@code "ID | Name | Status"}</td></tr>
+     *   <tr><td>{@code Summary/DeviceCount}</td><td>int</td><td>Total devices detected</td></tr>
+     *   <tr><td>{@code Summary/DuplicateCount}</td><td>int</td><td>Number of duplicate-ID groups</td></tr>
+     *   <tr><td>{@code Summary/Result}</td><td>String</td><td>{@code "PASS"}, {@code "FAIL"}, or {@code "NO DEVICES"}</td></tr>
+     * </table>
+     */
+    private void publishToNetworkTables(List<DetectedDevice> detected, Map<String, Long> idCounts) {
+        // --- Bus Health ---
+        var status = RobotController.getCANStatus();
+        NetworkTable healthTable = table.getSubTable("BusHealth");
+        healthTable.getEntry("Utilization").setDouble(status.percentBusUtilization * 100.0);
+        healthTable.getEntry("ReceiveErrors").setInteger(status.receiveErrorCount);
+        healthTable.getEntry("TransmitErrors").setInteger(status.transmitErrorCount);
+        healthTable.getEntry("TxFullCount").setInteger(status.txFullCount);
+        healthTable.getEntry("Healthy").setBoolean(
+                status.receiveErrorCount == 0 && status.transmitErrorCount == 0);
+
+        // --- Devices ---
+        // Each entry formatted as "ID | DeviceName | Status" for easy dashboard consumption
+        String[] deviceEntries = detected.stream()
+                .sorted(Comparator.comparingInt(DetectedDevice::deviceId)
+                        .thenComparing(DetectedDevice::description))
+                .map(d -> {
+                    long count = idCounts.getOrDefault(d.duplicateKey(), 1L);
+                    String deviceStatus = count > 1 ? "DUPLICATE" : "OK";
+                    return d.deviceId() + " | " + d.description() + " | " + deviceStatus;
+                })
+                .toArray(String[]::new);
+        table.getEntry("Devices").setStringArray(deviceEntries);
+
+        // --- Summary ---
+        long duplicateGroups = idCounts.values().stream().filter(c -> c > 1).count();
+        NetworkTable summaryTable = table.getSubTable("Summary");
+        summaryTable.getEntry("DeviceCount").setInteger(detected.size());
+        summaryTable.getEntry("DuplicateCount").setInteger(duplicateGroups);
+
+        String result;
+        if (detected.isEmpty()) {
+            result = "NO DEVICES";
+        } else if (duplicateGroups > 0) {
+            result = "FAIL";
+        } else {
+            result = "PASS";
+        }
+        summaryTable.getEntry("Result").setString(result);
     }
 }
