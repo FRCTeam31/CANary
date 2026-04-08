@@ -133,14 +133,52 @@ public class CANBusInspector {
 
     // -----------------------------------------------------------------------
 
+    /**
+     * Represents a single CAN device detected on the bus.
+     *
+     * @param manufacturer the manufacturer that produced this device
+     * @param deviceType   the FRC CAN device-type category (motor controller, gyro, etc.)
+     * @param deviceId     the 6-bit CAN device ID (0–62) assigned to this device
+     */
     public record DetectedDevice(Manufacturer manufacturer, DeviceType deviceType, int deviceId) {
+        /**
+         * Returns a human-readable name for this device (e.g. "TalonFX (Kraken X60 / Falcon 500)").
+         * Uses the {@code DEVICE_NAMES} lookup table and falls back to
+         * "{@code Manufacturer DeviceType}" if no specific name is registered.
+         *
+         * @return the display name for this device
+         */
         public String description() { return lookupDeviceName(manufacturer, deviceType); }
-        /** Duplicate key: within a device type, no two devices may share an ID */
+
+        /**
+         * Returns a key used to detect duplicate CAN IDs within the same device type.
+         * Two devices are considered duplicates if they share the same device-type code
+         * <em>and</em> the same device ID.
+         *
+         * @return a string of the form {@code "deviceTypeCode:deviceId"}
+         */
         public String duplicateKey() { return deviceType.code + ":" + deviceId; }
     }
 
     // -----------------------------------------------------------------------
 
+    /**
+     * Runs the full CAN bus inspection and prints a formatted report to standard output
+     * (visible in Driver Station RioLog).
+     *
+     * <p>The report includes:
+     * <ul>
+     *   <li>Bus health (utilization %, RX/TX error counts)</li>
+     *   <li>A table of every detected device with its CAN ID and model name</li>
+     *   <li>Duplicate-ID warnings</li>
+     *   <li>An overall PASS / FAIL result</li>
+     * </ul>
+     *
+     * <p><strong>Note:</strong> This method is blocking and iterates over all possible
+     * manufacturer × device-type × ID combinations. Call it once (e.g. in
+     * {@code robotInit} with a delay, or from a triggered command) rather than in a
+     * periodic loop.
+     */
     public void runInspection() {
         System.out.println("\n" + "=".repeat(62));
         System.out.println("  CAN BUS QA TOOL  —  Passive Device Scan");
@@ -159,9 +197,25 @@ public class CANBusInspector {
         System.out.println("=".repeat(62) + "\n");
     }
 
-    // -----------------------------------------------------------------------
-
-    private List<DetectedDevice> scanBus() {
+    /**
+     * Scans the CAN bus for all connected FRC devices by probing every known
+     * manufacturer × device-type × ID (0–62) combination.
+     *
+     * <p>For each combination, a temporary {@link edu.wpi.first.wpilibj.CAN CAN} receiver
+     * is opened and {@code readPacketLatest} is called on API ID {@code 0x00} (the
+     * lowest-numbered periodic status frame). If a frame has been received for that
+     * tuple, the device is recorded.
+     *
+     * <p>The roboRIO itself is intentionally skipped (NI / Robot Controller) because
+     * it is always present and is not wired by the electrical team.
+     *
+     * <p><strong>Performance:</strong> This method opens and closes a CAN receiver for
+     * every combination (~11,000), so it is not instantaneous. Avoid calling it in a
+     * periodic loop.
+     *
+     * @return a list of {@link DetectedDevice} entries, one per device found on the bus
+     */
+    public List<DetectedDevice> scanBus() {
         List<DetectedDevice> found = new ArrayList<>();
         CANData data = new CANData();
 
@@ -197,6 +251,8 @@ public class CANBusInspector {
 
         return found;
     }
+
+    // -----------------------------------------------------------------------
 
     private static final int MAX_DEVICE_ID = 62;
 
